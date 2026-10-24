@@ -5,7 +5,7 @@
 		<meta name="viewport" content="width=device-width,initial-scale=1" />
 		<title>ORK Rudar Banovići</title>
 		<link rel="icon" type="image/png" href="logo.png" />
-		<link rel="stylesheet" href="style.css?v=11" />
+		<link rel="stylesheet" href="style.css?v=12" />
 		<!-- PWA -->
 		<link rel="manifest" href="manifest.webmanifest" />
 		<meta name="theme-color" content="#07130d" />
@@ -310,6 +310,58 @@
 							<div class="settings-text"><strong>Osvježi notifikacije</strong><span class="muted">Ako uređaj ne dobija obavijesti, ponovo ga prijavi.</span></div>
 							<button type="button" class="btn secondary small" id="notifResetBtn">Osvježi</button>
 						</div>
+					</div>
+					<div class="settings-card settings-help">
+						<h3 class="settings-sub">Ne stižu obavijesti? Pomoć za telefon</h3>
+						<p class="muted">Neki telefoni (posebno Xiaomi, Redmi i POCO) gase Chrome u pozadini da štede bateriju, pa obavijesti ne stignu. Ovo se može popraviti samo u postavkama telefona, jedan put.</p>
+						<details class="help-item" open>
+							<summary>Za sve telefone (prvo uradite ovo)</summary>
+							<ol>
+								<li>Kliknite "Uključi" iznad i odaberite <strong>Dozvoli</strong>.</li>
+								<li>Ne gasite Chrome opcijom "Prisilno zaustavi", jer tada obavijesti ne mogu stići.</li>
+								<li>Po želji dodajte sajt na početni ekran: Chrome, tri tačke, pa "Dodaj na početni ekran".</li>
+							</ol>
+						</details>
+						<details class="help-item">
+							<summary>Xiaomi / Redmi / POCO (MIUI, HyperOS)</summary>
+							<ol>
+								<li>Postavke, pa Aplikacije, pa Upravljanje aplikacijama, pa <strong>Chrome</strong>.</li>
+								<li>Uključite <strong>Automatsko pokretanje</strong> (Autostart).</li>
+								<li>Pod "Ušteda baterije" odaberite <strong>Bez ograničenja</strong>.</li>
+								<li>Pod "Notifikacije" provjerite da su dozvoljene.</li>
+								<li>Otvorite listu nedavnih aplikacija, povucite karticu Chromea nadolje i kliknite <strong>katanac</strong>, da se ne gasi.</li>
+								<li>Isto ponovite za <strong>Google Play usluge</strong>.</li>
+							</ol>
+						</details>
+						<details class="help-item">
+							<summary>Samsung</summary>
+							<ol>
+								<li>Postavke, pa Aplikacije, pa Chrome, pa Baterija, pa <strong>Neograničeno</strong>.</li>
+								<li>Postavke, pa Briga o uređaju, pa Baterija, pa Ograničenja u pozadini: uklonite Chrome sa popisa aplikacija koje "spavaju".</li>
+							</ol>
+						</details>
+						<details class="help-item">
+							<summary>Huawei</summary>
+							<ol>
+								<li>Postavke, pa Baterija, pa Pokretanje aplikacija, pa <strong>Chrome</strong>.</li>
+								<li>Isključite "Upravljaj automatski", pa uključite sve tri opcije ručno.</li>
+							</ol>
+						</details>
+						<details class="help-item">
+							<summary>Ostali Android telefoni (i crDroid)</summary>
+							<ol>
+								<li>Postavke, pa Aplikacije, pa Chrome, pa Baterija, pa <strong>Bez ograničenja</strong> (Unrestricted).</li>
+								<li>Isto za <strong>Google Play usluge</strong>.</li>
+							</ol>
+						</details>
+						<details class="help-item">
+							<summary>iPhone</summary>
+							<ol>
+								<li>Potreban je iOS 16.4 ili noviji.</li>
+								<li>U Safariju kliknite Dijeli, pa "Dodaj na početni ekran".</li>
+								<li>Otvorite sajt sa nove ikone na početnom ekranu, pa kliknite "Uključi" ovdje.</li>
+							</ol>
+						</details>
 					</div>
 				</div>
 			</section>

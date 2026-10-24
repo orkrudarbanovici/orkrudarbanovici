@@ -6,6 +6,7 @@ import base64
 import binascii
 import uuid
 import threading
+import hmac
 import io
 import urllib.request
 import urllib.error
@@ -38,7 +39,7 @@ SITE_URL = os.getenv("SITE_URL", "https://orkrudarbanovici.github.io/orkrudarban
 PUSH_SEGMENT_TRIES = [["All"], ["Subscribed Users"], ["Total Subscriptions"]]
 
 
-def send_push_async(heading, message):
+def send_push_async(heading, message, ttl=259200):
     """Salje push svim pretplacenim korisnicima. Radi u pozadini; greska nikad ne rusi server."""
     if not ONESIGNAL_APP_ID or not ONESIGNAL_API_KEY:
         return
@@ -66,7 +67,7 @@ def send_push_async(heading, message):
                 "headings": {"en": heading[:80]},
                 "contents": {"en": message[:200]},
                 "priority": 10,
-                "ttl": 259200,
+                "ttl": ttl,
             }
             if base:
                 body["chrome_web_badge"] = base + "badge-96.png"
@@ -94,7 +95,7 @@ def send_push_async(heading, message):
             log.warning("OneSignal push nije poslan: %s", exc)
 
     threading.Thread(target=_send, daemon=True).start()
-SERVER_VERSION = "2026-10-23-push-fallback"
+SERVER_VERSION = "2026-10-24-daily-reminder-builtin"
 
 
 # ---------------------------------------------------------------------------
@@ -1044,6 +1045,92 @@ def handle_chat():
         conn.close()
 
 
+# Dnevni podsjetnik: vanjski "cron" servis (npr. cron-job.org) svaki dan u isto vrijeme otvori ovaj link.
+# U Renderu postavite CRON_KEY (tajna) i po zelji REMINDER_TEXT.
+CRON_KEY = os.getenv("CRON_KEY", "").strip()
+REMINDER_TEXT = os.getenv("REMINDER_TEXT", "Provjeri ima li trening danas!").strip() or "Provjeri ima li trening danas!"
+_reminder_lock = threading.Lock()
+_last_reminder_ts = 0.0
+
+
+@app.route('/api/cron/daily-reminder', methods=['GET', 'POST'])
+def cron_daily_reminder():
+    global _last_reminder_ts
+    if not CRON_KEY:
+        return jsonify({"ok": False, "error": "CRON_KEY nije postavljen na serveru."}), 403
+    given = (request.args.get("key") or request.headers.get("X-Cron-Key") or "").strip()
+    if not hmac.compare_digest(given.encode("utf-8"), CRON_KEY.encode("utf-8")):
+        return jsonify({"ok": False, "error": "Neispravan kljuc."}), 403
+    with _reminder_lock:
+        now = time.time()
+        if now - _last_reminder_ts < 600:  # zastita od dvostrukog slanja (10 min)
+            return jsonify({"ok": True, "skipped": True})
+        _last_reminder_ts = now
+    send_push_async(CLUB_NAME_PUSH, REMINDER_TEXT, ttl=REMINDER_TTL_SECONDS)
+    return jsonify({"ok": True, "sent": REMINDER_TEXT})
+
+
+# Ugradjeni dnevni podsjetnik (ne treba vanjski cron ako server stalno radi, npr. uz UptimeRobot).
+# U Renderu postavite REMINDER_TIME, npr. 08:00 (vrijeme u Sarajevu). Prazno = iskljuceno.
+REMINDER_TIME = os.getenv("REMINDER_TIME", "").strip()
+# Podsjetnik vrijedi samo nekoliko sati: ako telefon bude "uspavan", ne stize sutradan kao zastarjela poruka.
+REMINDER_TTL_SECONDS = 6 * 3600
+
+
+def _sarajevo_now():
+    from datetime import datetime, timedelta, timezone
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Europe/Sarajevo"))
+    except Exception:  # noqa: BLE001 - rezerva ako nema tzdata: CET/CEST po pravilu EU
+        utc = datetime.now(timezone.utc)
+
+        def last_sunday(year, month):
+            d = datetime(year, month, 31, 1, 0, tzinfo=timezone.utc)
+            return d - timedelta(days=(d.weekday() + 1) % 7)
+
+        offset = 2 if last_sunday(utc.year, 3) <= utc < last_sunday(utc.year, 10) else 1
+        return utc + timedelta(hours=offset)
+
+
+def _reminder_loop():
+    try:
+        hh, mm = [int(x) for x in REMINDER_TIME.split(":")[:2]]
+        if not (0 <= hh < 24 and 0 <= mm < 60):
+            raise ValueError("izvan raspona")
+    except Exception:  # noqa: BLE001
+        log.warning("REMINDER_TIME mora biti u obliku HH:MM (npr. 08:00); podsjetnik nije ukljucen.")
+        return
+    target = hh * 60 + mm
+    log.info("Dnevni podsjetnik ukljucen: svaki dan u %02d:%02d (Sarajevo).", hh, mm)
+    done_day = None
+    while True:
+        try:
+            now = _sarajevo_now()
+            day = now.strftime("%Y-%m-%d")
+            minutes = now.hour * 60 + now.minute
+            # salje se samo u prozoru od 2 sata nakon zadanog vremena (nikad prekasno nakon restarta)
+            if day != done_day and target <= minutes < target + 120:
+                conn = get_db_connection()
+                try:
+                    db_execute(conn, "CREATE TABLE IF NOT EXISTS reminder_log (day TEXT PRIMARY KEY, ts BIGINT NOT NULL)")
+                    row = db_fetchone(
+                        conn,
+                        "INSERT INTO reminder_log (day, ts) VALUES (%s, %s) ON CONFLICT (day) DO NOTHING RETURNING day",
+                        (day, int(time.time() * 1000))
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                done_day = day
+                if row:  # samo jedan proces/instanca uspije upisati dan, pa nema duplih poruka
+                    send_push_async(CLUB_NAME_PUSH, REMINDER_TEXT, ttl=REMINDER_TTL_SECONDS)
+                    log.info("Dnevni podsjetnik poslan (%s).", day)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Dnevni podsjetnik: %s", exc)
+        time.sleep(30)
+
+
 TYPING_TTL_MS = 5000
 
 
@@ -1476,6 +1563,10 @@ def set_player_profile():
         return jsonify({"ok": True})
     finally:
         conn.close()
+
+
+if REMINDER_TIME:
+    threading.Thread(target=_reminder_loop, daemon=True).start()
 
 
 if __name__ == '__main__':

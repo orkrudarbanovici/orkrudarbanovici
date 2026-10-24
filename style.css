@@ -665,3 +665,9 @@ body.lb-open{overflow:hidden}
 .settings-text{display:flex;flex-direction:column;gap:2px;min-width:0}
 .settings-text .muted{font-size:13px}
 .settings-row .btn{flex:0 0 auto}
+.settings-help{margin-top:16px}
+.settings-help .settings-sub{margin-top:0}
+.help-item{border-top:1px solid var(--line);padding:10px 0}
+.help-item summary{cursor:pointer;font-weight:600;font-size:14px}
+.help-item ol{margin:8px 0 0;padding-left:20px;font-size:13px;line-height:1.55;color:var(--muted)}
+.help-item ol strong{color:var(--text)}
