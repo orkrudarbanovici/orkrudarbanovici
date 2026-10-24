@@ -5,7 +5,7 @@
 		<meta name="viewport" content="width=device-width,initial-scale=1" />
 		<title>ORK Rudar Banovići</title>
 		<link rel="icon" type="image/png" href="logo.png" />
-		<link rel="stylesheet" href="style.css?v=12" />
+		<link rel="stylesheet" href="style.css?v=13" />
 		<!-- PWA -->
 		<link rel="manifest" href="manifest.webmanifest" />
 		<meta name="theme-color" content="#07130d" />
@@ -115,6 +115,7 @@
 
 				<section class="list">
 					<h2>Obavijesti</h2>
+					<div id="notifWarning" class="notif-warning" role="alert" hidden>Upozorenje: Obavijesti nisu dozvoljene na ovom uređaju. Da biste ih uključili, posjetite <button type="button" id="notifWarningLink" class="notif-warning-link">Postavke</button>.</div>
 					<ul id="announcements"></ul>
 				</section>
 
@@ -373,7 +374,7 @@
 			</section>
 		</main>
 
-		<script src="script.js?v=17"></script>
+		<script src="script.js?v=18"></script>
 	</body>
 </html>
 

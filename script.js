@@ -377,6 +377,7 @@ function enablePushNotifications() {
       }
       if (subId) {
         showPushStatus('Notifikacije su uključene.\nID pretplate: ' + subId);
+        updateNotifWarning();
       } else {
         showPushStatus('Dozvola je data, ali OneSignal nije napravio pretplatu.\n\n' + await pushDiagnostics(), true);
       }
@@ -413,6 +414,7 @@ function disablePushNotifications() {
     try {
       await OneSignal.User.PushSubscription.optOut();
       showPushStatus('Notifikacije su isključene na ovom uređaju. Ponovo ih uključujete preko "Uključi notifikacije".');
+      if ($('notifWarning')) $('notifWarning').hidden = false;
     } catch (e) {
       showPushStatus('Isključivanje nije uspjelo: ' + (e && e.message ? e.message : e), true);
     }
@@ -512,9 +514,27 @@ function showView(name) {
 // ---------------------------------------------------------------------------
 // Obavijesti
 // ---------------------------------------------------------------------------
+// Upozorenje na početnoj (Obavijesti) ako obavijesti nisu dozvoljene / uključene na ovom uređaju
+function updateNotifWarning() {
+  const box = $('notifWarning');
+  if (!box) return;
+  const allowed = ('Notification' in window) && Notification.permission === 'granted';
+  box.hidden = allowed;
+  if (!allowed) return;
+  // dozvola je data, ali je uređaj možda isključen preko "Isključi notifikacije"
+  window.OneSignalDeferred = window.OneSignalDeferred || [];
+  window.OneSignalDeferred.push(async function (OneSignal) {
+    try {
+      for (let i = 0; i < 20 && !window.ONESIGNAL_INIT_DONE; i++) await new Promise(r => setTimeout(r, 250));
+      if (OneSignal.User.PushSubscription.optedIn === false) box.hidden = false;
+    } catch (e) { /* ignore */ }
+  });
+}
+
 async function renderAnnouncements() {
   const list = $('announcements');
   if (!list) return;
+  updateNotifWarning();
   try {
     const items = await withLoader(() => fetchJson(API_BASE + '/announcements'));
     list.innerHTML = '';
@@ -2927,6 +2947,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   if ($('logoutBtn')) $('logoutBtn').addEventListener('click', logOut);
   if ($('notifBtn')) $('notifBtn').addEventListener('click', enablePushNotifications);
+  if ($('notifWarningLink')) $('notifWarningLink').addEventListener('click', () => showView('settings'));
   if ($('notifOffBtn')) $('notifOffBtn').addEventListener('click', disablePushNotifications);
   if ($('notifResetBtn')) $('notifResetBtn').addEventListener('click', resetPushNotifications);
   resumePushReset();
