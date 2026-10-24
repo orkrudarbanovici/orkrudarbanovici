@@ -387,6 +387,397 @@ function enablePushNotifications() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Redovnost (evidencija dolazaka na treninge)
+// ---------------------------------------------------------------------------
+const ATT_STATUS = {
+  present: { label: 'Došao', next: 'optional' },
+  optional: { label: 'Nije obavezan', next: 'absent' },
+  absent: { label: 'Nije došao', next: 'present' }
+};
+const ATT_WEEKDAYS = ['Nedjelja', 'Ponedjeljak', 'Utorak', 'Srijeda', 'Četvrtak', 'Petak', 'Subota'];
+const attState = { sessions: [], roster: [], meta: {}, tab: 'sessions', openId: null, timers: {} };
+
+function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function attDayLabel(day) {
+  const [y, m, d] = String(day).split('-').map(Number);
+  const dt = new Date(y, (m || 1) - 1, d || 1);
+  if (isNaN(dt)) return String(day);
+  return `${ATT_WEEKDAYS[dt.getDay()]}, ${pad2(d)}.${pad2(m)}.${y}.`;
+}
+
+function attCounts(session) {
+  const entries = session.entries || [];
+  return {
+    present: entries.filter(e => e.status === 'present').length,
+    required: entries.filter(e => e.status !== 'optional').length
+  };
+}
+
+async function loadAttendance() {
+  const data = await fetchJson(API_BASE + '/attendance');
+  return (Array.isArray(data) ? data : []).map(s => ({
+    ...s,
+    entries: (Array.isArray(s.entries) ? s.entries : []).map(e => ({
+      name: String(e.name || ''),
+      status: ATT_STATUS[e.status] ? e.status : 'absent',
+      guest: !!e.guest
+    }))
+  }));
+}
+
+async function renderAttendance() {
+  const list = $('attList');
+  if (!list) return;
+  if ($('attForm')) {
+    $('attForm').hidden = !isAdmin();
+    if (!$('attDate').value) $('attDate').value = todayISO();
+  }
+  try {
+    const admin = isAdmin();
+    const [sessions, matches, meta] = await withLoader(() => Promise.all([
+      loadAttendance(),
+      admin ? loadMatches() : Promise.resolve([]),
+      loadPlayersMeta()
+    ]));
+    attState.sessions = sessions;
+    attState.meta = meta || {};
+    attState.roster = admin
+      ? computePlayerStats(matches)
+          .map(p => ({ key: p.key, name: p.name, number: p.number }))
+          .sort((a, b) => a.name.localeCompare(b.name, 'bs'))
+      : [];
+  } catch (err) {
+    list.innerHTML = '';
+    list.appendChild(h('div', 'md-note', 'Nije moguće učitati redovnost. ' + err.message));
+    return;
+  }
+  drawAttendance();
+}
+
+function drawAttendance() {
+  const onSessions = attState.tab === 'sessions';
+  if ($('attPanelSessions')) $('attPanelSessions').hidden = !onSessions;
+  if ($('attPanelSummary')) $('attPanelSummary').hidden = onSessions;
+  if ($('attTabSessions')) $('attTabSessions').classList.toggle('active', onSessions);
+  if ($('attTabSummary')) $('attTabSummary').classList.toggle('active', !onSessions);
+  if (onSessions) drawAttendanceSessions(); else drawAttendanceSummary();
+}
+
+function drawAttendanceSessions() {
+  const box = $('attList');
+  if (!box) return;
+  box.innerHTML = '';
+  if ($('attRosterNote')) $('attRosterNote').hidden = !(isAdmin() && !attState.roster.length);
+  if (!attState.sessions.length) {
+    box.appendChild(h('div', 'md-note', 'Još nema evidentiranih treninga.' + (isAdmin() ? ' Dodajte prvi trening iznad.' : '')));
+    return;
+  }
+  const byDay = new Map();
+  attState.sessions.forEach(s => {
+    if (!byDay.has(s.day)) byDay.set(s.day, []);
+    byDay.get(s.day).push(s);
+  });
+  [...byDay.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1)).forEach(([day, list]) => {
+    list.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    box.appendChild(h('div', 'att-day', attDayLabel(day)));
+    list.forEach((s, i) => box.appendChild(buildAttendanceCard(s, i + 1)));
+  });
+}
+
+// Spremanje promjena treninga (nakon kratke pauze, da se ne šalje zahtjev za svaki klik)
+function attSaveSoon(session, statusEl) {
+  clearTimeout(attState.timers[session.id]);
+  statusEl.className = 'att-save';
+  statusEl.textContent = 'Spremam...';
+  attState.timers[session.id] = setTimeout(async () => {
+    try {
+      await fetchJson(API_BASE + '/attendance', { method: 'POST', body: JSON.stringify(session) });
+      statusEl.textContent = 'Spremljeno ✓';
+    } catch (err) {
+      statusEl.className = 'att-save err';
+      statusEl.textContent = 'Nije spremljeno: ' + err.message;
+    }
+  }, 500);
+}
+
+function buildAttendanceCard(session, number) {
+  const card = h('div', 'att-session');
+  const head = h('button', 'att-head');
+  head.type = 'button';
+  const titleBox = h('span', 'att-title-box');
+  const title = h('span', 'att-title');
+  const setTitle = () => { title.textContent = `Trening ${number}` + (session.label ? ' · ' + session.label : ''); };
+  setTitle();
+  titleBox.appendChild(title);
+  if (session.generation) titleBox.appendChild(h('span', 'att-sub', 'Generacija ' + session.generation));
+  const count = h('span', 'att-count');
+  count.title = 'Došlo / obavezno';
+  head.append(titleBox, count, h('span', 'att-chev', '▾'));
+  const body = h('div', 'att-body');
+  const saveStatus = h('span', 'att-save');
+
+  const updateCount = () => {
+    const c = attCounts(session);
+    count.textContent = `${c.present}/${c.required}`;
+  };
+  const setOpen = (open) => {
+    body.hidden = !open;
+    card.classList.toggle('open', open);
+    if (open) attState.openId = session.id;
+    else if (attState.openId === session.id) attState.openId = null;
+  };
+  const persist = () => attSaveSoon(session, saveStatus);
+
+  const buildTools = () => {
+    const tools = h('div', 'att-tools');
+
+    const editRow = h('div', 'att-edit-row');
+    const dateInput = document.createElement('input');
+    dateInput.type = 'date';
+    dateInput.value = session.day;
+    dateInput.title = 'Datum treninga';
+    dateInput.addEventListener('change', () => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateInput.value)) { dateInput.value = session.day; return; }
+      session.day = dateInput.value;
+      persist();
+      drawAttendanceSessions();
+    });
+    const labelInput = document.createElement('input');
+    labelInput.type = 'text';
+    labelInput.maxLength = 60;
+    labelInput.placeholder = 'Naziv treninga';
+    labelInput.value = session.label || '';
+    labelInput.addEventListener('change', () => {
+      session.label = labelInput.value.trim();
+      setTitle();
+      persist();
+    });
+    editRow.append(dateInput, labelInput);
+    tools.appendChild(editRow);
+
+    const addRow = h('div', 'att-add');
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.maxLength = 80;
+    input.placeholder = 'Dodaj igrača (sa spiska ili novo ime)';
+    const dlId = 'attDl_' + session.id;
+    input.setAttribute('list', dlId);
+    const dl = document.createElement('datalist');
+    dl.id = dlId;
+    const have = new Set(session.entries.map(e => nameKey(e.name)));
+    attState.roster.filter(p => !have.has(p.key)).forEach(p => {
+      const option = document.createElement('option');
+      option.value = p.name;
+      dl.appendChild(option);
+    });
+    const addBtn = h('button', 'btn small', 'Dodaj');
+    addBtn.type = 'button';
+    addBtn.addEventListener('click', () => {
+      const name = input.value.trim().replace(/\s+/g, ' ');
+      if (!name) return;
+      const key = nameKey(name);
+      if (have.has(key)) { alert('Taj igrač je već na ovom treningu.'); return; }
+      const onRoster = attState.roster.find(p => p.key === key);
+      session.entries.push({ name: onRoster ? onRoster.name : name, status: 'present', guest: !onRoster });
+      updateCount();
+      renderBody();
+      persist();
+    });
+    addRow.append(input, dl, addBtn);
+    tools.appendChild(addRow);
+
+    const btnRow = h('div', 'att-btn-row');
+    const allBtn = h('button', 'btn secondary small', 'Svi došli');
+    allBtn.type = 'button';
+    allBtn.title = 'Označi sve koji su "Nije došao" kao "Došao" (obavezni ostaju kako jesu)';
+    allBtn.addEventListener('click', () => {
+      session.entries.forEach(e => { if (e.status === 'absent') e.status = 'present'; });
+      updateCount();
+      renderBody();
+      persist();
+    });
+    const delBtn = h('button', 'btn secondary small att-del', 'Obriši trening');
+    delBtn.type = 'button';
+    delBtn.addEventListener('click', async () => {
+      if (!confirm('Obrisati ovaj trening?')) return;
+      try {
+        await fetchJson(API_BASE + '/attendance/' + encodeURIComponent(session.id), { method: 'DELETE' });
+        attState.sessions = attState.sessions.filter(s => s.id !== session.id);
+        drawAttendance();
+      } catch (err) {
+        alert('Trening nije obrisan: ' + err.message);
+      }
+    });
+    btnRow.append(allBtn, delBtn, saveStatus);
+    tools.appendChild(btnRow);
+    return tools;
+  };
+
+  const renderBody = () => {
+    body.innerHTML = '';
+    const admin = isAdmin();
+    if (!session.entries.length) body.appendChild(h('div', 'md-note', 'Nema igrača na ovom treningu.'));
+    session.entries.forEach(entry => {
+      const row = h('div', 'att-row');
+      const nameEl = h('span', 'att-name', entry.name);
+      if (entry.guest) nameEl.appendChild(h('span', 'att-guest', 'gost'));
+      row.appendChild(nameEl);
+      const chip = h(admin ? 'button' : 'span', 'att-chip ' + entry.status, ATT_STATUS[entry.status].label);
+      if (admin) {
+        chip.type = 'button';
+        chip.addEventListener('click', () => {
+          entry.status = ATT_STATUS[entry.status].next;
+          chip.className = 'att-chip ' + entry.status;
+          chip.textContent = ATT_STATUS[entry.status].label;
+          updateCount();
+          persist();
+        });
+      }
+      row.appendChild(chip);
+      if (admin && entry.guest) {
+        const rm = h('button', 'att-rm', '×');
+        rm.type = 'button';
+        rm.title = 'Ukloni gosta sa treninga';
+        rm.addEventListener('click', () => {
+          session.entries = session.entries.filter(e => e !== entry);
+          updateCount();
+          renderBody();
+          persist();
+        });
+        row.appendChild(rm);
+      }
+      body.appendChild(row);
+    });
+    if (admin) body.appendChild(buildTools());
+  };
+
+  head.addEventListener('click', () => setOpen(body.hidden));
+  updateCount();
+  renderBody();
+  setOpen(attState.openId === session.id);
+  card.append(head, body);
+  return card;
+}
+
+async function createAttendance(day, label, generation) {
+  const entries = attState.roster.map(p => {
+    const gens = (attState.meta[p.key] && attState.meta[p.key].generations) || [];
+    const outside = generation && gens.length && !gens.includes(generation);
+    return { name: p.name, status: outside ? 'optional' : 'absent', guest: false };
+  });
+  const session = {
+    id: 'att_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+    day, label, generation, entries, ts: Date.now()
+  };
+  await fetchJson(API_BASE + '/attendance', { method: 'POST', body: JSON.stringify(session) });
+  attState.sessions.push(session);
+  attState.openId = session.id;
+  attState.tab = 'sessions';
+  drawAttendance();
+}
+
+function drawAttendanceSummary() {
+  const box = $('attSummary');
+  if (!box) return;
+  box.innerHTML = '';
+  const gen = $('attGenFilter') ? $('attGenFilter').value : '';
+  const period = $('attPeriod') ? $('attPeriod').value : 'all';
+
+  let sessions = attState.sessions;
+  if (period !== 'all') {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - Number(period));
+    const cut = `${cutoff.getFullYear()}-${pad2(cutoff.getMonth() + 1)}-${pad2(cutoff.getDate())}`;
+    sessions = sessions.filter(s => s.day >= cut);
+  }
+
+  const map = new Map();
+  sessions.forEach(s => s.entries.forEach(e => {
+    const key = nameKey(e.name);
+    if (!key) return;
+    let rec = map.get(key);
+    if (!rec) {
+      rec = { key, name: e.name, present: 0, required: 0, guestOnly: true };
+      map.set(key, rec);
+    }
+    if (!e.guest) rec.guestOnly = false;
+    if (e.status !== 'optional') {
+      rec.required += 1;
+      if (e.status === 'present') rec.present += 1;
+    }
+  }));
+
+  let rows = [...map.values()];
+  if (gen) rows = rows.filter(r => ((attState.meta[r.key] || {}).generations || []).includes(gen));
+
+  box.appendChild(h('p', 'muted att-sum-note', `Treninga u odabranom razdoblju: ${sessions.length}`));
+  if (!rows.length) {
+    box.appendChild(h('div', 'md-note', 'Nema podataka za odabrani filter.'));
+    return;
+  }
+  const pct = (r) => (r.required ? r.present / r.required : -1);
+  rows.sort((a, b) => pct(b) - pct(a) || a.name.localeCompare(b.name, 'bs'));
+
+  const head = h('div', 'att-sum-row att-sum-head');
+  ['Igrač', 'Došao', 'Obavezno', '%'].forEach(label => head.appendChild(h('span', '', label)));
+  box.appendChild(head);
+  rows.forEach(r => {
+    const row = h('div', 'att-sum-row');
+    const nameEl = h('span', 'att-name', r.name);
+    if (r.guestOnly) nameEl.appendChild(h('span', 'att-guest', 'gost'));
+    row.appendChild(nameEl);
+    row.appendChild(h('span', '', String(r.present)));
+    row.appendChild(h('span', '', String(r.required)));
+    const p = pct(r);
+    const percent = p < 0 ? '—' : Math.round(p * 100) + '%';
+    const cls = p < 0 ? '' : (p >= 0.8 ? ' good' : (p >= 0.5 ? ' mid' : ' low'));
+    row.appendChild(h('span', 'att-pct' + cls, percent));
+    box.appendChild(row);
+  });
+}
+
+function initAttendanceUI() {
+  const fill = (sel, first) => {
+    if (!sel) return;
+    sel.innerHTML = '';
+    [['', first], ...PLAYER_GENERATIONS.map(g => [g, g])].forEach(([value, label]) => {
+      const option = h('option', '', label);
+      option.value = value;
+      sel.appendChild(option);
+    });
+  };
+  fill($('attGeneration'), 'Svi igrači');
+  fill($('attGenFilter'), 'Sve generacije');
+  if ($('attTabSessions')) $('attTabSessions').addEventListener('click', () => { attState.tab = 'sessions'; drawAttendance(); });
+  if ($('attTabSummary')) $('attTabSummary').addEventListener('click', () => { attState.tab = 'summary'; drawAttendance(); });
+  if ($('attPeriod')) $('attPeriod').addEventListener('change', drawAttendanceSummary);
+  if ($('attGenFilter')) $('attGenFilter').addEventListener('change', drawAttendanceSummary);
+  const form = $('attForm');
+  if (form) {
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!isAdmin()) return;
+      const day = $('attDate').value;
+      if (!day) { alert('Odaberite datum treninga.'); return; }
+      const btn = $('attSubmit');
+      btn.disabled = true;
+      try {
+        await createAttendance(day, $('attLabel').value.trim(), $('attGeneration').value);
+        $('attLabel').value = '';
+      } catch (err) {
+        alert('Trening nije dodan: ' + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+}
+
 // Prikaz stanja notifikacija u Postavkama
 function renderSettings() {
   const el = $('notifState');
@@ -481,7 +872,8 @@ const VIEWS = {
   matchDetail: 'viewMatchDetail',
   players: 'viewPlayers',
   player: 'viewPlayer',
-  settings: 'viewSettings'
+  settings: 'viewSettings',
+  attendance: 'viewAttendance'
 };
 
 function closeMenu() {
@@ -509,6 +901,7 @@ function showView(name) {
   if (name === 'players') renderPlayersList();
   if (name === 'player') renderPlayerPage();
   if (name === 'settings') renderSettings();
+  if (name === 'attendance') renderAttendance();
 }
 
 // ---------------------------------------------------------------------------
@@ -2940,13 +3333,14 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!menuList.contains(e.target) && e.target !== menuBtn) closeMenu();
     });
   }
-  const nav = { announcementsBtn: 'announcements', chatBtn: 'chat', galleryBtn: 'gallery', terminiBtn: 'termini', matchesBtn: 'matches', playersBtn: 'players', settingsBtn: 'settings' };
+  const nav = { announcementsBtn: 'announcements', chatBtn: 'chat', galleryBtn: 'gallery', terminiBtn: 'termini', matchesBtn: 'matches', playersBtn: 'players', settingsBtn: 'settings', attendanceBtn: 'attendance' };
   Object.keys(nav).forEach(id => {
     const btn = $(id);
     if (btn) btn.addEventListener('click', () => showView(nav[id]));
   });
   if ($('logoutBtn')) $('logoutBtn').addEventListener('click', logOut);
   if ($('notifBtn')) $('notifBtn').addEventListener('click', enablePushNotifications);
+  initAttendanceUI();
   if ($('notifWarningLink')) $('notifWarningLink').addEventListener('click', () => showView('settings'));
   if ($('notifOffBtn')) $('notifOffBtn').addEventListener('click', disablePushNotifications);
   if ($('notifResetBtn')) $('notifResetBtn').addEventListener('click', resetPushNotifications);

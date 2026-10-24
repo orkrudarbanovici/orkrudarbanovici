@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import time
 import logging
@@ -95,7 +96,7 @@ def send_push_async(heading, message, ttl=259200):
             log.warning("OneSignal push nije poslan: %s", exc)
 
     threading.Thread(target=_send, daemon=True).start()
-SERVER_VERSION = "2026-10-24-daily-reminder-builtin"
+SERVER_VERSION = "2026-10-25-attendance"
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +307,20 @@ def init_db():
         db_execute(conn, """
             CREATE TABLE IF NOT EXISTS chat_typing (
                 username TEXT PRIMARY KEY,
+                ts BIGINT NOT NULL
+            )
+        """)
+        conn.commit()
+
+        # Redovnost: evidencija dolazaka na treninge
+        db_execute(conn, """
+            CREATE TABLE IF NOT EXISTS attendance (
+                id TEXT PRIMARY KEY,
+                day TEXT NOT NULL,
+                label TEXT,
+                generation TEXT,
+                entries TEXT NOT NULL,
+                created_by TEXT,
                 ts BIGINT NOT NULL
             )
         """)
@@ -1068,6 +1083,102 @@ def cron_daily_reminder():
         _last_reminder_ts = now
     send_push_async(CLUB_NAME_PUSH, REMINDER_TEXT, ttl=REMINDER_TTL_SECONDS)
     return jsonify({"ok": True, "sent": REMINDER_TEXT})
+
+
+# ---------------------------------------------------------------------------
+# Redovnost (evidencija dolazaka na treninge)
+# ---------------------------------------------------------------------------
+
+ATTENDANCE_STATUSES = ("present", "absent", "optional")
+
+
+def clean_attendance_entries(value):
+    if not isinstance(value, list):
+        return []
+    out = []
+    seen = set()
+    for item in value[:150]:
+        if not isinstance(item, dict):
+            continue
+        name = clean_text(" ".join(str(item.get("name") or "").split()), 80)
+        key = player_key(name)
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        status = item.get("status")
+        out.append({
+            "name": name,
+            "status": status if status in ATTENDANCE_STATUSES else "absent",
+            "guest": bool(item.get("guest")),
+        })
+    return out
+
+
+@app.route('/api/attendance', methods=['GET', 'POST'])
+def handle_attendance():
+    if request.method == 'POST':
+        denied = admin_required()
+        if denied:
+            return denied
+    conn = get_db_connection()
+    try:
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+            day = str(payload.get("day") or "").strip()
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+                return jsonify({"ok": False, "error": "Datum treninga nije ispravan."}), 400
+            item_id = clean_text(str(payload.get("id") or f"att_{int(time.time() * 1000)}"), 80)
+            label = clean_text(payload.get("label") or "", 60)
+            generation = clean_text(payload.get("generation") or "", 30)
+            entries = clean_attendance_entries(payload.get("entries"))
+            ts = int(payload.get("ts") or time.time() * 1000)
+            db_execute(
+                conn,
+                """
+                INSERT INTO attendance (id, day, label, generation, entries, created_by, ts)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    day = EXCLUDED.day,
+                    label = EXCLUDED.label,
+                    generation = EXCLUDED.generation,
+                    entries = EXCLUDED.entries
+                """,
+                (item_id, day, label, generation, json.dumps(entries, ensure_ascii=False), request_user()[:60], ts)
+            )
+            conn.commit()
+            return jsonify({"ok": True, "id": item_id})
+
+        rows = db_fetchall(
+            conn,
+            "SELECT id, day, label, generation, entries, ts FROM attendance ORDER BY day DESC, ts ASC LIMIT 1500"
+        )
+        return jsonify([
+            {
+                "id": r["id"],
+                "day": r["day"],
+                "label": r["label"] or "",
+                "generation": r["generation"] or "",
+                "entries": load_json(r["entries"], []),
+                "ts": r["ts"],
+            }
+            for r in rows
+        ])
+    finally:
+        conn.close()
+
+
+@app.route('/api/attendance/<item_id>', methods=['DELETE'])
+def delete_attendance(item_id):
+    denied = admin_required()
+    if denied:
+        return denied
+    conn = get_db_connection()
+    try:
+        db_execute(conn, "DELETE FROM attendance WHERE id = %s", (item_id,))
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
 
 
 # Ugradjeni dnevni podsjetnik (ne treba vanjski cron ako server stalno radi, npr. uz UptimeRobot).

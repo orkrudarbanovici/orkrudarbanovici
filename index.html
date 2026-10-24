@@ -5,7 +5,7 @@
 		<meta name="viewport" content="width=device-width,initial-scale=1" />
 		<title>ORK Rudar Banovići</title>
 		<link rel="icon" type="image/png" href="logo.png" />
-		<link rel="stylesheet" href="style.css?v=13" />
+		<link rel="stylesheet" href="style.css?v=14" />
 		<!-- PWA -->
 		<link rel="manifest" href="manifest.webmanifest" />
 		<meta name="theme-color" content="#07130d" />
@@ -89,6 +89,7 @@
 					<div id="menuList" class="menu-list" role="menu">
 						<button class="menu-item" id="announcementsBtn">Obavijesti</button>
 						<button class="menu-item" id="chatBtn">Chat</button>
+						<button class="menu-item" id="attendanceBtn">Redovnost</button>
 						<button class="menu-item" id="galleryBtn">Galerija</button>
 						<button class="menu-item" id="terminiBtn">Termini</button>
 						<button class="menu-item" id="matchesBtn">Utakmice</button>
@@ -293,6 +294,46 @@
 					<div id="playersList"></div>
 				</div>
 			</section>
+			<section id="viewAttendance" class="view-panel">
+				<div class="md-wrap">
+					<div class="att-card">
+						<h2>Redovnost</h2>
+						<p class="muted">Evidencija dolazaka na treninge.</p>
+						<div class="tabs">
+							<button id="attTabSessions" class="tab-btn active" type="button">Treninzi</button>
+							<button id="attTabSummary" class="tab-btn" type="button">Pregled po igračima</button>
+						</div>
+						<div id="attPanelSessions">
+							<form id="attForm" class="att-form" hidden>
+								<h3 class="att-form-title">Novi trening</h3>
+								<div class="att-form-grid">
+									<label>Datum<input id="attDate" type="date" required /></label>
+									<label>Naziv (nije obavezno)<input id="attLabel" type="text" maxlength="60" placeholder="npr. Večernji trening" /></label>
+									<label>Generacija<select id="attGeneration"></select></label>
+								</div>
+								<p class="muted att-hint">Svi igrači sa spiska se upišu automatski. Ako odaberete generaciju, igrači koji nisu u njoj dobiju oznaku "Nije obavezan".</p>
+								<div id="attRosterNote" class="md-note" hidden>Spisak igrača je prazan. Igrači se pojavljuju kad upišete spisak u detaljima odigrane utakmice. Igrače možete dodati i ručno na samom treningu.</div>
+								<button id="attSubmit" class="btn" type="submit">Dodaj trening</button>
+							</form>
+							<div id="attList"></div>
+						</div>
+						<div id="attPanelSummary" hidden>
+							<div class="att-filters">
+								<label>Razdoblje
+									<select id="attPeriod">
+										<option value="all">Sve</option>
+										<option value="90">Zadnjih 90 dana</option>
+										<option value="30">Zadnjih 30 dana</option>
+										<option value="7">Zadnjih 7 dana</option>
+									</select>
+								</label>
+								<label>Generacija<select id="attGenFilter"></select></label>
+							</div>
+							<div id="attSummary"></div>
+						</div>
+					</div>
+				</div>
+			</section>
 			<section id="viewSettings" class="view-panel">
 				<div class="md-wrap">
 					<div class="settings-card">
@@ -374,7 +415,7 @@
 			</section>
 		</main>
 
-		<script src="script.js?v=18"></script>
+		<script src="script.js?v=19"></script>
 	</body>
 </html>
 
