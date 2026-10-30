@@ -3,6 +3,7 @@ import json
 import time
 import logging
 import base64
+import hashlib
 import binascii
 import uuid
 import threading
@@ -147,8 +148,8 @@ def get_pool():
             try:
                 pool = ConnectionPool(
                     DATABASE_URL,
-                    min_size=1,
-                    max_size=6,
+                    min_size=4,
+                    max_size=8,
                     kwargs={"row_factory": dict_row, "prepare_threshold": None, "connect_timeout": 10},
                     check=_fast_check,
                     max_idle=240,
@@ -1195,10 +1196,67 @@ def delete_match(match_id):
 def get_teams():
     conn = get_db_connection()
     try:
+        if request.args.get("compact"):
+            # Samo oznaka verzije grba (kratki hash) umjesto cijele slike: odgovor je mali, a slike se
+            # preuzimaju zasebno preko /api/teams/badge i preglednik ih pamti.
+            rows = db_fetchall(
+                conn,
+                """
+                SELECT name,
+                       CASE WHEN badge IS NULL OR badge = '' THEN NULL
+                            ELSE substr(md5(badge), 1, 8) END AS v
+                FROM club_teams ORDER BY name ASC
+                """
+            )
+            return jsonify({r["name"]: r["v"] for r in rows})
+        # Stari oblik (cijele slike u odgovoru) ostaje za stare verzije sajta koje preglednik jos pamti.
         rows = db_fetchall(conn, "SELECT name, badge FROM club_teams ORDER BY name ASC")
         return jsonify({r["name"]: r["badge"] for r in rows})
     finally:
         conn.close()
+
+
+_BADGE_CACHE = {}  # (ime, verzija) -> (mimetype, bajtovi); da ista slika ne ide svaki put u bazu
+
+
+@app.route('/api/teams/badge', methods=['GET'])
+def team_badge():
+    name = str(request.args.get("name", "")).strip()[:200]
+    version = str(request.args.get("v", "")).strip()[:16]
+    if not name:
+        return jsonify({"ok": False, "error": "Missing name"}), 404
+
+    hit = _BADGE_CACHE.get((name, version)) if version else None
+    if hit is None:
+        conn = get_db_connection()
+        try:
+            row = db_fetchone(conn, "SELECT badge FROM club_teams WHERE name = %s", (name,))
+        finally:
+            conn.close()
+        badge = row["badge"] if row else None
+        if not badge:
+            return jsonify({"ok": False, "error": "No badge"}), 404
+        try:
+            header, b64 = badge.split(",", 1)
+            mimetype = header[5:].split(";")[0] or "image/png"
+            data = base64.b64decode(b64)
+        except (ValueError, binascii.Error):
+            return jsonify({"ok": False, "error": "Bad image"}), 404
+        if not data:
+            return jsonify({"ok": False, "error": "Bad image"}), 404
+        actual = hashlib.md5(badge.encode("utf-8")).hexdigest()[:8]
+        if len(_BADGE_CACHE) > 300:
+            _BADGE_CACHE.clear()
+        _BADGE_CACHE[(name, actual)] = (mimetype, data)
+        hit = (mimetype, data)
+        immutable = (actual == version)
+    else:
+        immutable = True
+
+    resp = Response(hit[1], mimetype=hit[0])
+    # Ako je klijent trazio staru verziju grba, ne pamtimo trajno
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable" if immutable else "no-cache"
+    return resp
 
 
 @app.route('/api/teams', methods=['POST'])

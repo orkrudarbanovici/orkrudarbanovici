@@ -1952,8 +1952,21 @@ async function loadMatches() {
 }
 
 async function loadTeams() {
-  const data = await fetchJson(API_BASE + '/teams');
-  return data && typeof data === 'object' ? data : {};
+  // Server vraća samo kratku oznaku verzije grba po timu (mali odgovor); sliku grba
+  // preglednik preuzima zasebno i pamti. Vrijednost je i dalje adresa slike ili null.
+  const data = await fetchJson(API_BASE + '/teams?compact=1');
+  const out = {};
+  if (data && typeof data === 'object') {
+    Object.keys(data).forEach(name => {
+      const v = data[name];
+      if (!v) { out[name] = null; return; }
+      // Ako server još vraća staru verziju (cijela slika), koristi je direktno.
+      out[name] = String(v).indexOf('data:') === 0
+        ? v
+        : API_BASE + '/teams/badge?name=' + encodeURIComponent(name) + '&v=' + encodeURIComponent(v);
+    });
+  }
+  return out;
 }
 
 async function upsertMatch(match) {
