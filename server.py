@@ -1,12 +1,14 @@
 import os
+import re
 import json
 import time
 import logging
 import base64
-import hashlib
 import binascii
+import hashlib
 import uuid
 import threading
+import hmac
 import io
 import urllib.request
 import urllib.error
@@ -34,33 +36,17 @@ ONESIGNAL_API_KEY = os.getenv("ONESIGNAL_API_KEY", "").strip()
 SITE_URL = os.getenv("SITE_URL", "https://orkrudarbanovici.github.io/orkrudarbanovici/").strip()  # npr. https://vas-sajt.com (otvara se klikom na notifikaciju)
 
 
-def send_push_async(heading, message):
-    """Salje push svim pretplacenim korisnicima. Radi u pozadini; greska nikad ne rusi server.
-    Ako OneSignal vrati 'nema primatelja', probava jednostavnije varijante zahtjeva, a log pokazuje koja je prosla."""
+# Segmenti na koje se pokusava slati (prvi koji vrati id poruke je dovoljan).
+# "All" radi na ovoj aplikaciji; "Subscribed Users" vraca "not subscribed", pa je samo rezerva.
+PUSH_SEGMENT_TRIES = [["All"], ["Subscribed Users"], ["Total Subscriptions"]]
+
+
+def send_push_async(heading, message, ttl=259200):
+    """Salje push svim pretplacenim korisnicima. Radi u pozadini; greska nikad ne rusi server."""
     if not ONESIGNAL_APP_ID or not ONESIGNAL_API_KEY:
         return
 
-    base = (SITE_URL.rstrip("/") + "/") if SITE_URL else ""
-
-    def _body(segments, badge=False, extras=False):
-        body = {
-            "app_id": ONESIGNAL_APP_ID,
-            "target_channel": "push",
-            "included_segments": segments,
-            "headings": {"en": heading[:80]},
-            "contents": {"en": message[:200]},
-        }
-        if SITE_URL:
-            body["url"] = SITE_URL
-        if extras:
-            body["priority"] = 10
-            body["ttl"] = 259200
-        if badge and base:
-            body["chrome_web_badge"] = base + "badge-96.png"
-        return body
-
-    def _call(label, body):
-        """True = poruka napravljena, False = nema primatelja/greska (probaj dalje), None = mrezna greska (stani)."""
+    def _post(body):
         req = urllib.request.Request(
             "https://api.onesignal.com/notifications",
             data=json.dumps(body).encode("utf-8"),
@@ -70,46 +56,48 @@ def send_push_async(heading, message):
             },
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                status = resp.status
-                raw = resp.read().decode("utf-8", "replace")[:400]
-        except urllib.error.HTTPError as exc:
-            try:
-                detail = exc.read().decode("utf-8", "replace")[:400]
-            except Exception:  # noqa: BLE001
-                detail = ""
-            log.warning("OneSignal [%s] HTTP %s %s", label, exc.code, detail)
-            return False
-        except Exception as exc:  # noqa: BLE001
-            log.warning("OneSignal push nije poslan [%s]: %s", label, exc)
-            return None
-        try:
-            data = json.loads(raw)
-        except ValueError:
-            data = {}
-        if data.get("id"):
-            log.info("OneSignal push poslan [%s] (status %s): %s", label, status, raw)
-            return True
-        log.warning("OneSignal [%s] nema primatelja (status %s): %s", label, status, raw)
-        return False
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+            return resp.status, raw
 
     def _send():
         try:
-            attempts = [
-                ("Subscribed Users + badge + priority/ttl", _body(["Subscribed Users"], badge=True, extras=True)),
-                ("Subscribed Users + priority/ttl (bez badgea)", _body(["Subscribed Users"], extras=True)),
-                ("Subscribed Users (bez dodataka)", _body(["Subscribed Users"])),
-                ("All (bez dodataka)", _body(["All"])),
-            ]
-            for label, body in attempts:
-                if _call(label, body) is not False:
-                    break
+            base = (SITE_URL.rstrip("/") + "/") if SITE_URL else ""
+            body = {
+                "app_id": ONESIGNAL_APP_ID,
+                "target_channel": "push",
+                "headings": {"en": heading[:80]},
+                "contents": {"en": message[:200]},
+                "priority": 10,
+                "ttl": ttl,
+            }
+            if base:
+                body["chrome_web_badge"] = base + "badge-96.png"
+            if SITE_URL:
+                body["url"] = SITE_URL
+            for segments in PUSH_SEGMENT_TRIES:
+                body["included_segments"] = segments
+                try:
+                    status, raw = _post(body)
+                except urllib.error.HTTPError as exc:
+                    try:
+                        detail = exc.read().decode("utf-8", "replace")[:400]
+                    except Exception:  # noqa: BLE001
+                        detail = ""
+                    log.warning("OneSignal push nije poslan (segment %s): HTTP %s %s", segments, exc.code, detail)
+                    continue
+                try:
+                    data = json.loads(raw)
+                except ValueError:
+                    data = {}
+                log.info("OneSignal push (app %s..., segment %s, status %s): %s", ONESIGNAL_APP_ID[:8], segments, status, raw[:400])
+                if data.get("id"):
+                    return
         except Exception as exc:  # noqa: BLE001
             log.warning("OneSignal push nije poslan: %s", exc)
 
     threading.Thread(target=_send, daemon=True).start()
-SERVER_VERSION = "2026-10-21-voice-reply"
+SERVER_VERSION = "2026-10-25-attendance"
 
 
 # ---------------------------------------------------------------------------
@@ -125,8 +113,8 @@ _pool = None
 _pool_failed = False
 _pool_lock = threading.Lock()
 
-# Provjera "da li je veza ziva" kosta jedno putovanje do baze (Oregon -> Irska ~150 ms).
-# Veza koja je koristena prije par sekundi sigurno je ziva, pa je tada preskacemo.
+# Provjera "da li je veza ziva" kosta jedno putovanje do baze. Veza koja je koristena prije par
+# sekundi sigurno je ziva, pa je tada preskacemo (stara provjera ostaje za veze koje su dugo mirovale).
 _LAST_USED = {}
 _RECENT_SECONDS = 20
 
@@ -195,7 +183,7 @@ def get_db_connection():
     if pool is not None:
         raw = pool.getconn(timeout=15)
         # GET/HEAD samo citaju: bez transakcije nema BEGIN i ROLLBACK (po jedno putovanje do baze manje).
-        # Upisi (POST/PUT/DELETE) ostaju u transakciji kao i prije.
+        # Upisi (POST/PUT/DELETE) i pozadinski poslovi ostaju u transakciji kao i prije.
         try:
             raw.autocommit = bool(has_request_context() and request.method in ("GET", "HEAD"))
         except Exception:  # noqa: BLE001
@@ -335,6 +323,29 @@ def init_db():
                 FROM {legacy}
                 ON CONFLICT (id) DO NOTHING
             """, "chat")
+
+        # Chat: ko trenutno pise ("... is typing")
+        db_execute(conn, """
+            CREATE TABLE IF NOT EXISTS chat_typing (
+                username TEXT PRIMARY KEY,
+                ts BIGINT NOT NULL
+            )
+        """)
+        conn.commit()
+
+        # Redovnost: evidencija dolazaka na treninge
+        db_execute(conn, """
+            CREATE TABLE IF NOT EXISTS attendance (
+                id TEXT PRIMARY KEY,
+                day TEXT NOT NULL,
+                label TEXT,
+                generation TEXT,
+                entries TEXT NOT NULL,
+                created_by TEXT,
+                ts BIGINT NOT NULL
+            )
+        """)
+        conn.commit()
 
         # Galerija
         ensure_table(conn, "gallery", """
@@ -1029,6 +1040,10 @@ def handle_chat():
                 (msg_id, sender, text, image or None, audio or None, audio_ms, reply_to, now)
             )
             row = db_fetchone(conn, "SELECT ts FROM chat_messages WHERE id = %s", (msg_id,))
+            try:
+                db_execute(conn, "DELETE FROM chat_typing WHERE LOWER(username) = LOWER(%s)", (sender,))
+            except Exception:
+                pass
             conn.commit()
             return jsonify({"ok": True, "id": msg_id, "ts": row["ts"] if row else now})
 
@@ -1062,6 +1077,228 @@ def handle_chat():
                 """
             )
         return jsonify([chat_json(r) for r in rows])
+    finally:
+        conn.close()
+
+
+# Dnevni podsjetnik: vanjski "cron" servis (npr. cron-job.org) svaki dan u isto vrijeme otvori ovaj link.
+# U Renderu postavite CRON_KEY (tajna) i po zelji REMINDER_TEXT.
+CRON_KEY = os.getenv("CRON_KEY", "").strip()
+REMINDER_TEXT = os.getenv("REMINDER_TEXT", "Provjeri ima li trening danas!").strip() or "Provjeri ima li trening danas!"
+_reminder_lock = threading.Lock()
+_last_reminder_ts = 0.0
+
+
+@app.route('/api/cron/daily-reminder', methods=['GET', 'POST'])
+def cron_daily_reminder():
+    global _last_reminder_ts
+    if not CRON_KEY:
+        return jsonify({"ok": False, "error": "CRON_KEY nije postavljen na serveru."}), 403
+    given = (request.args.get("key") or request.headers.get("X-Cron-Key") or "").strip()
+    if not hmac.compare_digest(given.encode("utf-8"), CRON_KEY.encode("utf-8")):
+        return jsonify({"ok": False, "error": "Neispravan kljuc."}), 403
+    with _reminder_lock:
+        now = time.time()
+        if now - _last_reminder_ts < 600:  # zastita od dvostrukog slanja (10 min)
+            return jsonify({"ok": True, "skipped": True})
+        _last_reminder_ts = now
+    send_push_async(CLUB_NAME_PUSH, REMINDER_TEXT, ttl=REMINDER_TTL_SECONDS)
+    return jsonify({"ok": True, "sent": REMINDER_TEXT})
+
+
+# ---------------------------------------------------------------------------
+# Redovnost (evidencija dolazaka na treninge)
+# ---------------------------------------------------------------------------
+
+ATTENDANCE_STATUSES = ("present", "absent", "optional")
+
+
+def clean_attendance_entries(value):
+    if not isinstance(value, list):
+        return []
+    out = []
+    seen = set()
+    for item in value[:150]:
+        if not isinstance(item, dict):
+            continue
+        name = clean_text(" ".join(str(item.get("name") or "").split()), 80)
+        key = player_key(name)
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        status = item.get("status")
+        out.append({
+            "name": name,
+            "status": status if status in ATTENDANCE_STATUSES else "absent",
+            "guest": bool(item.get("guest")),
+        })
+    return out
+
+
+@app.route('/api/attendance', methods=['GET', 'POST'])
+def handle_attendance():
+    if request.method == 'POST':
+        denied = admin_required()
+        if denied:
+            return denied
+    conn = get_db_connection()
+    try:
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+            day = str(payload.get("day") or "").strip()
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+                return jsonify({"ok": False, "error": "Datum treninga nije ispravan."}), 400
+            item_id = clean_text(str(payload.get("id") or f"att_{int(time.time() * 1000)}"), 80)
+            label = clean_text(payload.get("label") or "", 60)
+            generation = clean_text(payload.get("generation") or "", 30)
+            entries = clean_attendance_entries(payload.get("entries"))
+            ts = int(payload.get("ts") or time.time() * 1000)
+            db_execute(
+                conn,
+                """
+                INSERT INTO attendance (id, day, label, generation, entries, created_by, ts)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    day = EXCLUDED.day,
+                    label = EXCLUDED.label,
+                    generation = EXCLUDED.generation,
+                    entries = EXCLUDED.entries
+                """,
+                (item_id, day, label, generation, json.dumps(entries, ensure_ascii=False), request_user()[:60], ts)
+            )
+            conn.commit()
+            return jsonify({"ok": True, "id": item_id})
+
+        rows = db_fetchall(
+            conn,
+            "SELECT id, day, label, generation, entries, ts FROM attendance ORDER BY day DESC, ts ASC LIMIT 1500"
+        )
+        return jsonify([
+            {
+                "id": r["id"],
+                "day": r["day"],
+                "label": r["label"] or "",
+                "generation": r["generation"] or "",
+                "entries": load_json(r["entries"], []),
+                "ts": r["ts"],
+            }
+            for r in rows
+        ])
+    finally:
+        conn.close()
+
+
+@app.route('/api/attendance/<item_id>', methods=['DELETE'])
+def delete_attendance(item_id):
+    denied = admin_required()
+    if denied:
+        return denied
+    conn = get_db_connection()
+    try:
+        db_execute(conn, "DELETE FROM attendance WHERE id = %s", (item_id,))
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
+
+
+# Ugradjeni dnevni podsjetnik (ne treba vanjski cron ako server stalno radi, npr. uz UptimeRobot).
+# U Renderu postavite REMINDER_TIME, npr. 08:00 (vrijeme u Sarajevu). Prazno = iskljuceno.
+REMINDER_TIME = os.getenv("REMINDER_TIME", "").strip()
+# Podsjetnik vrijedi samo nekoliko sati: ako telefon bude "uspavan", ne stize sutradan kao zastarjela poruka.
+REMINDER_TTL_SECONDS = 6 * 3600
+
+
+def _sarajevo_now():
+    from datetime import datetime, timedelta, timezone
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Europe/Sarajevo"))
+    except Exception:  # noqa: BLE001 - rezerva ako nema tzdata: CET/CEST po pravilu EU
+        utc = datetime.now(timezone.utc)
+
+        def last_sunday(year, month):
+            d = datetime(year, month, 31, 1, 0, tzinfo=timezone.utc)
+            return d - timedelta(days=(d.weekday() + 1) % 7)
+
+        offset = 2 if last_sunday(utc.year, 3) <= utc < last_sunday(utc.year, 10) else 1
+        return utc + timedelta(hours=offset)
+
+
+def _reminder_loop():
+    try:
+        hh, mm = [int(x) for x in REMINDER_TIME.split(":")[:2]]
+        if not (0 <= hh < 24 and 0 <= mm < 60):
+            raise ValueError("izvan raspona")
+    except Exception:  # noqa: BLE001
+        log.warning("REMINDER_TIME mora biti u obliku HH:MM (npr. 08:00); podsjetnik nije ukljucen.")
+        return
+    target = hh * 60 + mm
+    log.info("Dnevni podsjetnik ukljucen: svaki dan u %02d:%02d (Sarajevo).", hh, mm)
+    done_day = None
+    while True:
+        try:
+            now = _sarajevo_now()
+            day = now.strftime("%Y-%m-%d")
+            minutes = now.hour * 60 + now.minute
+            # salje se samo u prozoru od 2 sata nakon zadanog vremena (nikad prekasno nakon restarta)
+            if day != done_day and target <= minutes < target + 120:
+                conn = get_db_connection()
+                try:
+                    db_execute(conn, "CREATE TABLE IF NOT EXISTS reminder_log (day TEXT PRIMARY KEY, ts BIGINT NOT NULL)")
+                    row = db_fetchone(
+                        conn,
+                        "INSERT INTO reminder_log (day, ts) VALUES (%s, %s) ON CONFLICT (day) DO NOTHING RETURNING day",
+                        (day, int(time.time() * 1000))
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                done_day = day
+                if row:  # samo jedan proces/instanca uspije upisati dan, pa nema duplih poruka
+                    send_push_async(CLUB_NAME_PUSH, REMINDER_TEXT, ttl=REMINDER_TTL_SECONDS)
+                    log.info("Dnevni podsjetnik poslan (%s).", day)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Dnevni podsjetnik: %s", exc)
+        time.sleep(30)
+
+
+TYPING_TTL_MS = 5000
+
+
+@app.route('/api/chat/typing', methods=['GET', 'POST'])
+def chat_typing():
+    """POST: javlja da korisnik pise (ili da je prestao: {"typing": false}).
+    GET: vraca imena ostalih korisnika koji pisu u zadnjih nekoliko sekundi."""
+    me = request_user()
+    if not me:
+        return jsonify({"typing": []}) if request.method == 'GET' else jsonify({"ok": True})
+    now = int(time.time() * 1000)
+    conn = get_db_connection()
+    try:
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+            if payload.get("typing", True):
+                db_execute(
+                    conn,
+                    """
+                    INSERT INTO chat_typing (username, ts) VALUES (%s, %s)
+                    ON CONFLICT (username) DO UPDATE SET ts = EXCLUDED.ts
+                    """,
+                    (me[:60], now)
+                )
+                db_execute(conn, "DELETE FROM chat_typing WHERE ts < %s", (now - 60000,))
+            else:
+                db_execute(conn, "DELETE FROM chat_typing WHERE username = %s", (me[:60],))
+            conn.commit()
+            return jsonify({"ok": True})
+
+        rows = db_fetchall(
+            conn,
+            "SELECT username FROM chat_typing WHERE ts >= %s AND LOWER(username) <> LOWER(%s) ORDER BY ts ASC LIMIT 5",
+            (now - TYPING_TTL_MS, me)
+        )
+        return jsonify({"typing": [r["username"] for r in rows]})
     finally:
         conn.close()
 
@@ -1515,6 +1752,10 @@ def set_player_profile():
         return jsonify({"ok": True})
     finally:
         conn.close()
+
+
+if REMINDER_TIME:
+    threading.Thread(target=_reminder_loop, daemon=True).start()
 
 
 if __name__ == '__main__':
