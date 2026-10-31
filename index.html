@@ -6,6 +6,13 @@
 		<title>ORK Rudar Banovići</title>
 		<link rel="icon" type="image/png" href="logo.png" />
 		<link rel="stylesheet" href="style.css?v=14" />
+		<style>
+			/* Meni podijeljen u grupe s podnaslovima */
+			.menu-list{min-width:200px;max-height:calc(100vh - 84px);max-height:calc(100dvh - 84px);overflow-y:auto;-webkit-overflow-scrolling:touch}
+			.menu-group + .menu-group{margin-top:6px;padding-top:6px;border-top:1px solid var(--line,#1e362d)}
+			.menu-title{padding:6px 10px 4px;font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--accent,#4ade80);cursor:default;user-select:none}
+			.menu-group .menu-item{padding-left:18px}
+		</style>
 		<!-- Adresa servera (API). Kad prelazite na novi servis, mijenjate SAMO ovu liniju. -->
 		<script>
 			window.API_ORIGIN = "https://orkrudarbanovici-2.onrender.com";
@@ -99,15 +106,27 @@
 						<span class="bar"></span>
 					</button>
 					<div id="menuList" class="menu-list" role="menu">
-						<button class="menu-item" id="announcementsBtn">Obavijesti</button>
-						<button class="menu-item" id="chatBtn">Chat</button>
-						<button class="menu-item" id="attendanceBtn">Redovnost</button>
-						<button class="menu-item" id="galleryBtn">Galerija</button>
-						<button class="menu-item" id="terminiBtn">Termini</button>
-						<button class="menu-item" id="matchesBtn">Utakmice</button>
-						<button class="menu-item" id="playersBtn">Igrači</button>
-						<button class="menu-item" id="settingsBtn">Postavke</button>
-						<button class="menu-item" id="logoutBtn">Odjava</button>
+						<div class="menu-group" role="group" aria-label="Obavijesti">
+							<div class="menu-title">Obavijesti</div>
+							<button class="menu-item" id="announcementsBtn">Obavijesti</button>
+							<button class="menu-item" id="galleryBtn">Galerija</button>
+							<button class="menu-item" id="chatBtn">Chat</button>
+						</div>
+						<div class="menu-group" role="group" aria-label="Treninzi">
+							<div class="menu-title">Treninzi</div>
+							<button class="menu-item" id="terminiBtn">Termini</button>
+							<button class="menu-item" id="attendanceBtn">Redovnost</button>
+						</div>
+						<div class="menu-group" role="group" aria-label="Utakmice">
+							<div class="menu-title">Utakmice</div>
+							<button class="menu-item" id="matchesBtn">Utakmice</button>
+							<button class="menu-item" id="playersBtn">Igrači</button>
+						</div>
+						<div class="menu-group" role="group" aria-label="Site">
+							<div class="menu-title">Site</div>
+							<button class="menu-item" id="settingsBtn">Postavke</button>
+							<button class="menu-item" id="logoutBtn">Odjava</button>
+						</div>
 					</div>
 				</div>
 			</div>
