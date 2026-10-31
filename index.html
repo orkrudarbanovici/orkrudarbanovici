@@ -6,6 +6,18 @@
 		<title>ORK Rudar Banovići</title>
 		<link rel="icon" type="image/png" href="logo.png" />
 		<link rel="stylesheet" href="style.css?v=14" />
+		<!-- Adresa servera (API). Kad prelazite na novi servis, mijenjate SAMO ovu liniju. -->
+		<script>
+			window.API_ORIGIN = "https://orkrudarbanovici-2.onrender.com";
+			(function () {
+				// Preglednik odmah počinje uspostavljati vezu sa serverom (brži prvi zahtjev)
+				var l = document.createElement("link");
+				l.rel = "preconnect";
+				l.href = window.API_ORIGIN;
+				l.crossOrigin = "anonymous";
+				document.head.appendChild(l);
+			})();
+		</script>
 		<!-- PWA -->
 		<link rel="manifest" href="manifest.webmanifest" />
 		<meta name="theme-color" content="#07130d" />
@@ -415,7 +427,7 @@
 			</section>
 		</main>
 
-		<script src="script.js?v=19"></script>
+		<script src="script.js?v=20"></script>
 	</body>
 </html>
 

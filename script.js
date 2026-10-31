@@ -1,7 +1,8 @@
 // ORK Rudar Banovići - glavna skripta (usklađena sa index.html)
 'use strict';
 
-const API_BASE = 'https://orkrudarbanovici-1.onrender.com/api';
+// Adresa servera se podešava u index.html (window.API_ORIGIN); ovo je rezervna vrijednost.
+const API_BASE = (window.API_ORIGIN || 'https://orkrudarbanovici-1.onrender.com') + '/api';
 const SESSION_USER_KEY = 'club_session_user';
 const CLUB_NAME = 'ORK Rudar Banovići';
 const CLUB_BADGE = 'rudar.png';
