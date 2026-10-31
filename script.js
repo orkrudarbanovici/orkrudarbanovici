@@ -874,7 +874,8 @@ const VIEWS = {
   players: 'viewPlayers',
   player: 'viewPlayer',
   settings: 'viewSettings',
-  attendance: 'viewAttendance'
+  attendance: 'viewAttendance',
+  standings: 'viewStandings'
 };
 
 function closeMenu() {
@@ -903,6 +904,153 @@ function showView(name) {
   if (name === 'player') renderPlayerPage();
   if (name === 'settings') renderSettings();
   if (name === 'attendance') renderAttendance();
+  if (name === 'standings') renderStandings();
+}
+
+// ---------------------------------------------------------------------------
+// Tabele (slika trenutne tabele po generaciji; objavljuje samo admin)
+// ---------------------------------------------------------------------------
+const STANDINGS_LABELS = { '2010/11': '10/11', '2012/13': '12/13', '2014/15': '14/15', 'Mini Rukomet': 'Mini rukomet' };
+let standingsGen = '2010/11';
+let standingsData = [];
+
+// Dugme u meniju i prikaz se prave ovdje, pa index.html ne treba mijenjati.
+function initStandingsUI() {
+  const matchesBtn = $('matchesBtn');
+  if (!$('standingsBtn') && matchesBtn && matchesBtn.parentNode) {
+    const btn = h('button', 'menu-item', 'Tabele');
+    btn.id = 'standingsBtn';
+    matchesBtn.parentNode.insertBefore(btn, matchesBtn.nextSibling);
+  }
+  const mainEl = document.querySelector('main');
+  if (!$('viewStandings') && mainEl) {
+    const sec = h('section', 'view-panel');
+    sec.id = 'viewStandings';
+    mainEl.appendChild(sec);
+  }
+  if ($('standingsBtn')) $('standingsBtn').addEventListener('click', () => showView('standings'));
+}
+
+async function renderStandings() {
+  const root = $('viewStandings');
+  if (!root) return;
+  try {
+    standingsData = await withLoader(() => fetchJson(API_BASE + '/standings'));
+  } catch (e) {
+    root.innerHTML = '';
+    const wrap = h('div', 'md-wrap');
+    wrap.appendChild(h('div', 'md-note', e.message || 'Tabele trenutno nisu dostupne.'));
+    root.appendChild(wrap);
+    return;
+  }
+  paintStandings();
+}
+
+function paintStandings() {
+  const root = $('viewStandings');
+  if (!root) return;
+  root.innerHTML = '';
+  const wrap = h('div', 'md-wrap');
+  wrap.appendChild(h('h2', 'pl-title', 'Tabele'));
+
+  const filters = h('div', 'st-filters');
+  PLAYER_GENERATIONS.forEach(gen => {
+    const b = h('button', 'st-gen-btn' + (gen === standingsGen ? ' active' : ''), STANDINGS_LABELS[gen] || gen);
+    b.type = 'button';
+    b.addEventListener('click', () => { standingsGen = gen; paintStandings(); });
+    filters.appendChild(b);
+  });
+  wrap.appendChild(filters);
+
+  const entry = (Array.isArray(standingsData) ? standingsData : []).find(x => x.generation === standingsGen)
+    || { generation: standingsGen, title: '', updated: 0, hasImage: false };
+
+  if (isAdmin()) wrap.appendChild(buildStandingsAdmin(entry));
+
+  if (entry.hasImage) {
+    const title = entry.title || ('Tabela – ' + standingsGen);
+    const card = h('div', 'st-card');
+    card.appendChild(h('h3', null, title));
+    const meta = 'Generacija ' + standingsGen + (entry.updated ? ' · ažurirano ' + formatStamp(entry.updated) : '');
+    card.appendChild(h('div', 'st-meta', meta));
+    const img = document.createElement('img');
+    img.className = 'st-img';
+    img.alt = title;
+    img.loading = 'lazy';
+    img.src = API_BASE + '/standings/image?generation=' + encodeURIComponent(standingsGen) + '&v=' + (entry.updated || 0);
+    img.addEventListener('click', () => openLightbox([{ src: img.src, caption: title }], 0));
+    card.appendChild(img);
+    wrap.appendChild(card);
+  } else {
+    wrap.appendChild(h('div', 'md-note', 'Tabela za ovu generaciju još nije objavljena.'));
+  }
+  root.appendChild(wrap);
+}
+
+function buildStandingsAdmin(entry) {
+  const gen = standingsGen;
+  const box = h('div', 'gallery-admin-panel st-admin');
+  box.appendChild(h('h2', null, 'Objavi tabelu – ' + gen));
+  const form = h('form', 'gallery-form');
+
+  const title = document.createElement('input');
+  title.type = 'text';
+  title.maxLength = 120;
+  title.placeholder = 'Naslov, npr. Tabela nakon 10. kola';
+  title.value = entry.title || '';
+  form.appendChild(title);
+
+  const file = document.createElement('input');
+  file.type = 'file';
+  file.accept = 'image/*';
+  form.appendChild(file);
+
+  form.appendChild(h('div', 'gallery-hint', entry.hasImage
+    ? 'Odaberite novu sliku da zamijenite trenutnu, ili samo promijenite naslov.'
+    : 'Odaberite sliku tabele za ovu generaciju.'));
+
+  const status = h('div', 'muted');
+  form.appendChild(status);
+
+  const btns = h('div', 'st-btns');
+  const save = h('button', 'btn', 'Sačuvaj');
+  save.type = 'submit';
+  btns.appendChild(save);
+  if (entry.hasImage) {
+    const del = h('button', 'btn secondary', 'Obriši tabelu');
+    del.type = 'button';
+    del.addEventListener('click', async () => {
+      if (!confirm('Obrisati tabelu za generaciju ' + gen + '?')) return;
+      try {
+        await withLoader(() => fetchJson(API_BASE + '/standings?generation=' + encodeURIComponent(gen), { method: 'DELETE' }));
+        await renderStandings();
+      } catch (err) {
+        status.textContent = err.message || 'Brisanje nije uspjelo.';
+      }
+    });
+    btns.appendChild(del);
+  }
+  form.appendChild(btns);
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = file.files[0];
+    if (!f && !entry.hasImage) { status.textContent = 'Odaberite sliku tabele.'; return; }
+    save.disabled = true;
+    status.textContent = '';
+    try {
+      const payload = { generation: gen, title: title.value.trim() };
+      if (f) payload.image = await fileToResizedDataUrl(f, 1800, 'image/jpeg', 0.85);
+      await withLoader(() => fetchJson(API_BASE + '/standings', { method: 'POST', body: JSON.stringify(payload) }), 'Spremam tabelu...');
+      await renderStandings();
+    } catch (err) {
+      status.textContent = err.message || 'Spremanje nije uspjelo.';
+      save.disabled = false;
+    }
+  });
+
+  box.appendChild(form);
+  return box;
 }
 
 // ---------------------------------------------------------------------------
@@ -3355,6 +3503,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if ($('logoutBtn')) $('logoutBtn').addEventListener('click', logOut);
   if ($('notifBtn')) $('notifBtn').addEventListener('click', enablePushNotifications);
   initAttendanceUI();
+  initStandingsUI();
   if ($('notifWarningLink')) $('notifWarningLink').addEventListener('click', () => showView('settings'));
   if ($('notifOffBtn')) $('notifOffBtn').addEventListener('click', disablePushNotifications);
   if ($('notifResetBtn')) $('notifResetBtn').addEventListener('click', resetPushNotifications);

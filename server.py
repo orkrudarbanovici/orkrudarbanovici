@@ -397,6 +397,15 @@ def init_db():
         """)
         db_execute(conn, "ALTER TABLE club_players ADD COLUMN IF NOT EXISTS positions TEXT")
         db_execute(conn, "ALTER TABLE club_players ADD COLUMN IF NOT EXISTS generations TEXT")
+        # Tabele (slika trenutne tabele po generaciji)
+        db_execute(conn, """
+            CREATE TABLE IF NOT EXISTS club_standings (
+                generation TEXT PRIMARY KEY,
+                title TEXT,
+                image TEXT,
+                updated BIGINT NOT NULL DEFAULT 0
+            )
+        """)
         conn.commit()
     finally:
         conn.close()
@@ -1625,6 +1634,108 @@ def clean_str_list(value, max_items=8, max_len=40):
         if text and text not in out:
             out.append(text)
     return out
+
+
+STANDINGS_GENERATIONS = ["2010/11", "2012/13", "2014/15", "Mini Rukomet"]
+
+
+@app.route('/api/standings', methods=['GET'])
+def list_standings():
+    """Metadata za sve generacije (bez slike); slika se ucitava preko /api/standings/image."""
+    conn = get_db_connection()
+    try:
+        rows = db_fetchall(
+            conn,
+            "SELECT generation, title, updated, (image IS NOT NULL AND image <> '') AS has_image FROM club_standings"
+        )
+    finally:
+        conn.close()
+    by_gen = {r["generation"]: r for r in rows}
+    result = []
+    for gen in STANDINGS_GENERATIONS:
+        r = by_gen.get(gen)
+        result.append({
+            "generation": gen,
+            "title": (r["title"] or "") if r else "",
+            "updated": int(r["updated"]) if r and r["updated"] else 0,
+            "hasImage": bool(r and r["has_image"]),
+        })
+    return jsonify(result)
+
+
+@app.route('/api/standings/image', methods=['GET'])
+def get_standings_image():
+    gen = str(request.args.get("generation") or "").strip()
+    conn = get_db_connection()
+    try:
+        row = db_fetchone(conn, "SELECT image FROM club_standings WHERE generation = %s", (gen,))
+    finally:
+        conn.close()
+    if not row or not row["image"]:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    return image_response(row["image"])
+
+
+@app.route('/api/standings', methods=['POST'])
+def set_standings():
+    denied = admin_required()
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    gen = str(data.get("generation") or "").strip()
+    title = clean_text(" ".join(str(data.get("title") or "").split()), 120)
+    image = str(data.get("image") or "")
+    if gen not in STANDINGS_GENERATIONS:
+        return jsonify({"ok": False, "error": "Unknown generation."}), 400
+    if image and (not image.startswith("data:image/") or len(image) > 3_500_000):
+        return jsonify({"ok": False, "error": "Invalid or too large image."}), 400
+
+    conn = get_db_connection()
+    try:
+        existing = db_fetchone(conn, "SELECT image FROM club_standings WHERE generation = %s", (gen,))
+        has_old = bool(existing and existing["image"])
+        if not image and not has_old:
+            return jsonify({"ok": False, "error": "Image is required."}), 400
+        now = int(time.time() * 1000)
+        if image:
+            db_execute(
+                conn,
+                """
+                INSERT INTO club_standings (generation, title, image, updated)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (generation) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    image = EXCLUDED.image,
+                    updated = EXCLUDED.updated
+                """,
+                (gen, title, image, now)
+            )
+        else:
+            # samo naslov (npr. ispravka "nakon 10. kola"); slika ostaje ista
+            db_execute(
+                conn,
+                "UPDATE club_standings SET title = %s WHERE generation = %s",
+                (title, gen)
+            )
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
+
+
+@app.route('/api/standings', methods=['DELETE'])
+def delete_standings():
+    denied = admin_required()
+    if denied:
+        return denied
+    gen = str(request.args.get("generation") or "").strip()
+    conn = get_db_connection()
+    try:
+        db_execute(conn, "DELETE FROM club_standings WHERE generation = %s", (gen,))
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
 
 
 @app.route('/api/players', methods=['GET'])

@@ -722,3 +722,19 @@ button.att-chip{cursor:pointer}
 .att-pct.mid{color:#fde68a}
 .att-pct.low{color:#fca5a5}
 .att-sum-note{font-size:13px;margin:0 0 8px}
+
+/* Tabele (slika tabele po generaciji) */
+.st-filters{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 16px}
+.st-gen-btn{background:rgba(255,255,255,0.02);color:var(--text);border:1px solid var(--line);padding:8px 12px;border-radius:999px;cursor:pointer;transition:all .2s ease;font:inherit}
+.st-gen-btn:hover,.st-gen-btn:focus-visible{border-color:rgba(74,222,128,0.5);background:rgba(74,222,128,0.08)}
+.st-gen-btn.active{background:linear-gradient(135deg,var(--accent),var(--accent-2));color:#031409;border-color:transparent;font-weight:700}
+.st-card{background:linear-gradient(180deg,var(--card),var(--card-2));border:1px solid rgba(134,239,172,0.12);border-radius:14px;padding:16px;box-shadow:0 12px 26px rgba(0,0,0,0.18)}
+.st-card h3{margin:0 0 4px;color:var(--accent-3);font-size:18px}
+.st-meta{font-size:12px;color:var(--muted);margin-bottom:12px}
+.st-img{display:block;width:100%;height:auto;border-radius:10px;cursor:zoom-in;background:#fff}
+.st-admin{margin-bottom:16px}
+.st-admin .st-btns{display:flex;gap:8px;flex-wrap:wrap}
+@media (max-width:760px){
+	.st-filters{gap:6px}
+	.st-gen-btn{flex:1 1 110px;text-align:center;min-height:42px}
+}
