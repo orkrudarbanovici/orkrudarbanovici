@@ -2746,7 +2746,56 @@ function fillPlayerSelect(sel, side, getRoster, selected) {
   sel.value = [...sel.options].some(o => o.value === target) ? target : '';
 }
 
-function buildDetailsEditor(m, teams, allMatches) {
+// ----- Preseti generacija (spisak igrača po generaciji) -----
+// Preset generacije = igrači koji u profilu imaju tu generaciju (sprema se na server preko /players/profile,
+// isto kao i "Generacije" na stranici igrača), pa radi na svim uređajima.
+function titleCaseName(key) {
+  return String(key || '').replace(/(^|\s)\S/g, c => c.toUpperCase());
+}
+
+function generationPreset(gen, meta, matches) {
+  const stats = new Map(computePlayerStats(matches).map(p => [p.key, p]));
+  const out = [];
+  Object.keys(meta || {}).forEach(key => {
+    const e = meta[key];
+    if (!e || !(e.generations || []).includes(gen)) return;
+    const st = stats.get(key);
+    out.push({
+      side: 'club',
+      name: st ? st.name : (e.name || titleCaseName(key)),
+      number: (st && st.number) || e.number || ''
+    });
+  });
+  return out.sort((a, b) => (parseInt(a.number, 10) || 999) - (parseInt(b.number, 10) || 999) || a.name.localeCompare(b.name, 'bs'));
+}
+
+// Spisak postaje preset: svi igrači sa spiska dobijaju generaciju, a igrači koji su je imali a nisu na spisku je gube.
+async function saveGenerationPreset(gen, players, meta) {
+  const wanted = new Map();
+  players.forEach(p => { const k = nameKey(p.name); if (k) wanted.set(k, p); });
+  const jobs = [];
+
+  wanted.forEach((p, key) => {
+    const cur = meta[key] || {};
+    const gens = cur.generations || [];
+    if (gens.includes(gen) && (!p.number || cur.number === p.number)) return;
+    jobs.push({ key, name: p.name, number: p.number || cur.number || '', positions: cur.positions || [], generations: gens.includes(gen) ? gens : [...gens, gen] });
+  });
+  Object.keys(meta).forEach(key => {
+    const cur = meta[key];
+    if (wanted.has(key) || !cur || !(cur.generations || []).includes(gen)) return;
+    jobs.push({ key, name: cur.name || titleCaseName(key), number: cur.number || '', positions: cur.positions || [], generations: cur.generations.filter(g => g !== gen) });
+  });
+
+  await Promise.all(jobs.map(j => fetchJson(API_BASE + '/players/profile', {
+    method: 'POST',
+    body: JSON.stringify({ name: j.name, number: j.number, positions: j.positions, generations: j.generations })
+  })));
+  jobs.forEach(j => { meta[j.key] = { ...(meta[j.key] || {}), number: j.number, positions: j.positions, generations: j.generations }; });
+}
+
+function buildDetailsEditor(m, teams, allMatches, playersMeta) {
+  const metaMap = playersMeta || {};
   const d = m.details || {};
   const info = matchTeamInfo(m, teams);
   const final = clubOppScore(m);
@@ -2854,6 +2903,64 @@ function buildDetailsEditor(m, teams, allMatches) {
   });
   rosterBtns.append(addPlayer, copyRoster);
   rosterSection.appendChild(rosterBtns);
+
+  // --- Preset po generaciji ---
+  const presetBox = h('div', 'md-section');
+  presetBox.appendChild(h('label', 'md-lab', 'Preset generacije'));
+  presetBox.appendChild(h('div', 'md-hint', 'Dodaj igrače cijele generacije na spisak, ili trenutni spisak (naše ekipe) spremi kao preset te generacije.'));
+  const presetRow = h('div', 'md-btns');
+  const genSel = document.createElement('select');
+  genSel.className = 'pl-filter';
+  const refreshPresetOptions = () => {
+    const keep = genSel.value;
+    genSel.innerHTML = '';
+    PLAYER_GENERATIONS.forEach(g => {
+      const o = h('option', '', `${g} (${generationPreset(g, metaMap, allMatches).length})`);
+      o.value = g;
+      genSel.appendChild(o);
+    });
+    if (keep) genSel.value = keep;
+  };
+  refreshPresetOptions();
+
+  const addGen = h('button', 'btn secondary small', 'Dodaj generaciju');
+  addGen.type = 'button';
+  addGen.addEventListener('click', () => {
+    const gen = genSel.value;
+    const preset = generationPreset(gen, metaMap, allMatches);
+    if (!preset.length) return alert('Preset za generaciju ' + gen + ' je prazan. Složi spisak pa klikni "Spremi kao preset".');
+    const have = new Set(getRoster().filter(p => p.side === 'club').map(p => nameKey(p.name)));
+    let added = 0;
+    preset.forEach(p => { if (!have.has(nameKey(p.name))) { addRosterRow(p); added++; } });
+    [...rosterBox.querySelectorAll('.md-row')].forEach(row => {
+      if (!row.querySelector('.in-number').value.trim() && !row.querySelector('.in-pname').value.trim()) row.remove();
+    });
+    refreshPlayerSelects();
+    if (!added) alert('Svi igrači generacije ' + gen + ' su već na spisku.');
+  });
+
+  const savePreset = h('button', 'btn secondary small', 'Spremi kao preset');
+  savePreset.type = 'button';
+  savePreset.addEventListener('click', async () => {
+    const gen = genSel.value;
+    const players = getRoster().filter(p => p.side === 'club' && p.name);
+    if (!players.length) return alert('Na spisku nema igrača naše ekipe.');
+    if (!confirm(`Spremiti ${players.length} igrača kao preset za generaciju ${gen}?\nIgrači koji su sada u tom presetu, a nisu na spisku, bit će uklonjeni iz njega.`)) return;
+    savePreset.disabled = true;
+    try {
+      await withLoader(() => saveGenerationPreset(gen, players, metaMap), 'Spremanje preseta...');
+      refreshPresetOptions();
+      alert('Preset za generaciju ' + gen + ' je spremljen.');
+    } catch (err) {
+      alert('Preset nije spremljen: ' + err.message);
+    } finally {
+      savePreset.disabled = false;
+    }
+  });
+
+  presetRow.append(genSel, addGen, savePreset);
+  presetBox.appendChild(presetRow);
+  rosterSection.appendChild(presetBox);
 
   // --- Strijelci ---
   const scorerSection = section('Strijelci');
@@ -3013,8 +3120,9 @@ async function renderMatchDetail() {
 
   let items;
   let teams;
+  let playersMeta;
   try {
-    [items, teams] = await withLoader(() => Promise.all([loadMatches(), loadTeams()]));
+    [items, teams, playersMeta] = await withLoader(() => Promise.all([loadMatches(), loadTeams(), loadPlayersMeta()]));
   } catch (err) {
     body.innerHTML = '';
     body.appendChild(h('div', 'md-note', 'Nije moguće učitati utakmicu. ' + err.message));
@@ -3043,7 +3151,7 @@ async function renderMatchDetail() {
     body.appendChild(buildSuspensionsCard(m, d, info, sides));
     const rosterCard = buildRosterCard(m, d, info, sides);
     if (rosterCard) body.appendChild(rosterCard);
-    if (isAdmin()) body.appendChild(buildDetailsEditor(m, teams, items));
+    if (isAdmin()) body.appendChild(buildDetailsEditor(m, teams, items, playersMeta));
   } else {
     body.appendChild(h('div', 'md-note', 'Strijelci, timeouti i isključenja bit će dostupni nakon što se upiše rezultat utakmice.'));
   }
