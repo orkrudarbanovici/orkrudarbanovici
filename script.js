@@ -448,7 +448,7 @@ async function renderAttendance() {
     attState.sessions = sessions;
     attState.meta = meta || {};
     attState.roster = admin
-      ? computePlayerStats(matches)
+      ? computePlayerStats(matches, true)
           .map(p => ({ key: p.key, name: p.name, number: p.number }))
           .sort((a, b) => a.name.localeCompare(b.name, 'bs'))
       : [];
@@ -2236,6 +2236,7 @@ function buildMatchItem(it, teams) {
   if (!it.played) parts.push(it.location === 'home' ? 'Kući' : 'Gostujuća');
   if (it.competition) parts.push(it.competition);
   if (it.generation) parts.push(it.generation);
+  if (it.friendly) parts.push('Prijateljska');
   left.append(title, h('div', 'match-meta', parts.join(' • ')));
 
   const actions = h('div', 'match-actions');
@@ -2319,6 +2320,19 @@ function initMatches() {
   const form = $('matchForm');
   if (!form) return;
 
+  // Kvačica "Prijateljska utakmica" (dodaje se iz skripte, ne treba mijenjati HTML)
+  if (!$('friendlyMatch')) {
+    const wrap = h('label', 'friendly-toggle');
+    wrap.style.cssText = 'display:flex;align-items:center;gap:8px;margin:10px 0;cursor:pointer;';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.id = 'friendlyMatch';
+    wrap.append(cb, document.createTextNode('Prijateljska utakmica (ne ulazi u statistiku igrača)'));
+    const submitBtn = form.querySelector('button[type="submit"], button:not([type])');
+    if (submitBtn && submitBtn.parentNode) submitBtn.parentNode.insertBefore(wrap, submitBtn);
+    else form.appendChild(wrap);
+  }
+
   const select = $('opponentSelect');
   if (select) {
     select.addEventListener('change', () => {
@@ -2354,6 +2368,7 @@ function initMatches() {
       location: $('location').value,
       competition: $('competition').value.trim(),
       generation: $('generation').value,
+      friendly: !!($('friendlyMatch') && $('friendlyMatch').checked),
       played: false
     };
 
@@ -2500,7 +2515,7 @@ function buildMatchInfo(m) {
     ['Vrijeme', formatTime(m.datetime)],
     ['Takmičenje', m.competition || '—'],
     ['Uzrast', m.generation || '—']
-  ].forEach(([label, value]) => {
+  ].concat(m.friendly ? [['Vrsta', 'Prijateljska (bez statistike)']] : []).forEach(([label, value]) => {
     const cell = document.createElement('div');
     cell.appendChild(h('label', '', label));
     cell.appendChild(h('strong', '', value));
@@ -2754,7 +2769,7 @@ function titleCaseName(key) {
 }
 
 function generationPreset(gen, meta, matches) {
-  const stats = new Map(computePlayerStats(matches).map(p => [p.key, p]));
+  const stats = new Map(computePlayerStats(matches, true).map(p => [p.key, p]));
   const out = [];
   Object.keys(meta || {}).forEach(key => {
     const e = meta[key];
@@ -2811,6 +2826,16 @@ function buildDetailsEditor(m, teams, allMatches, playersMeta) {
     return box;
   };
   const sideOf = (row) => row.querySelector('.sel-side').value;
+
+  // --- Prijateljska utakmica ---
+  const friendlyBox = section('Vrsta utakmice', 'Kod prijateljske utakmice golovi, nastupi i isključenja se ne upisuju igračima u statistiku.');
+  const friendlyLabel = h('label', '');
+  friendlyLabel.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;';
+  const friendlyCb = document.createElement('input');
+  friendlyCb.type = 'checkbox';
+  friendlyCb.checked = !!m.friendly;
+  friendlyLabel.append(friendlyCb, document.createTextNode('Prijateljska utakmica'));
+  friendlyBox.appendChild(friendlyLabel);
 
   // --- Poluvrijeme ---
   const halfBox = section('Golovi u 1. poluvremenu');
@@ -3093,7 +3118,7 @@ function buildDetailsEditor(m, teams, allMatches, playersMeta) {
     };
 
     save.disabled = true;
-    const ok = await upsertMatch({ ...m, details });
+    const ok = await upsertMatch({ ...m, friendly: friendlyCb.checked, details });
     save.disabled = false;
     if (ok) renderMatchDetail();
   });
@@ -3173,7 +3198,7 @@ function openPlayer(key) {
 }
 
 // Statistika se računa iz podataka utakmica (spisak, strijelci, isključenja). Igrač se prepoznaje po imenu.
-function computePlayerStats(matches) {
+function computePlayerStats(matches, includeFriendly) {
   const players = new Map();
 
   const touch = (entry, m) => {
@@ -3198,7 +3223,8 @@ function computePlayerStats(matches) {
     return game;
   };
 
-  (matches || []).filter(m => m.played && m.details).forEach(m => {
+  // Prijateljske utakmice se ne računaju u statistiku igrača (kao da se nisu ni igrale).
+  (matches || []).filter(m => m.played && m.details && (includeFriendly || !m.friendly)).forEach(m => {
     const d = m.details;
     const clubOnly = (list) => (Array.isArray(list) ? list : []).filter(p => p.side === 'club');
     clubOnly(d.roster).forEach(p => touch(p, m));
